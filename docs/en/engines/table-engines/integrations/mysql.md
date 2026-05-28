@@ -201,6 +201,7 @@ Default value: `false`.
 This setting applies to:
 
 - the `MySQL` table engine;
+- the `MySQL` database engine;
 - the `mysql` table function;
 - named collections used by MySQL integrations.
 
