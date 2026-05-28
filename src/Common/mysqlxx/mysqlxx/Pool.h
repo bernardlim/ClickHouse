@@ -251,7 +251,7 @@ private:
     std::string ssl_key;
     bool enable_local_infile;
     bool opt_reconnect;
-    bool enable_compression{false};
+    bool enable_compression;
 
     /// True if connection was established at least once.
     bool was_successful{false};

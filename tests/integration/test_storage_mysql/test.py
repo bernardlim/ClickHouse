@@ -825,6 +825,22 @@ def test_enable_compression(started_cluster):
     finally:
         node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
 
+    # Verify that MySQL protocol compression was actually negotiated at the wire level.
+    # performance_schema.session_status is scoped to the current connection, so Compression=ON
+    # proves MYSQL_OPT_COMPRESS was applied to the connection ClickHouse opened.
+    compression_status = node1.query(
+        f"""
+        SELECT Variable_value
+        FROM mysql('mysql80:3306', 'performance_schema', 'session_status', 'root', '{mysql_pass}',
+            SETTINGS enable_compression = 1)
+        WHERE Variable_name = 'Compression'
+        FORMAT TSV
+        """
+    ).strip()
+    assert compression_status == "ON", (
+        f"Expected MySQL compression to be ON, got: {compression_status!r}"
+    )
+
     drop_mysql_table(conn, table_name)
     conn.close()
 
