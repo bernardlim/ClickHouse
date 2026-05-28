@@ -831,9 +831,9 @@ def test_enable_compression(started_cluster):
         for _ in range(10):
             nc_compression_status = node1.query(
                 """
-                SELECT Variable_value
+                SELECT VARIABLE_VALUE
                 FROM mysql(mysql_compression_creds, database='performance_schema', table='session_status')
-                WHERE Variable_name = 'Compression'
+                WHERE VARIABLE_NAME = 'Compression'
                 FORMAT TSV
                 """
             ).strip()
@@ -853,10 +853,10 @@ def test_enable_compression(started_cluster):
     for _ in range(10):
         compression_status = node1.query(
             f"""
-            SELECT Variable_value
+            SELECT VARIABLE_VALUE
             FROM mysql('mysql80:3306', 'performance_schema', 'session_status', 'root', '{mysql_pass}',
                 SETTINGS enable_compression = 1)
-            WHERE Variable_name = 'Compression'
+            WHERE VARIABLE_NAME = 'Compression'
             FORMAT TSV
             """
         ).strip()
