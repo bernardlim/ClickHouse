@@ -759,6 +759,98 @@ def test_settings(started_cluster):
     conn.close()
 
 
+def test_enable_compression(started_cluster):
+    table_name = "test_enable_compression"
+    node1.query(f"DROP TABLE IF EXISTS {table_name}")
+    node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
+
+    conn = get_mysql_conn(started_cluster, cluster.mysql8_ip)
+    drop_mysql_table(conn, table_name)
+    create_mysql_table(conn, table_name)
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"INSERT INTO `clickhouse`.`{table_name}` (id, name, age, money) VALUES (1, 'name_1', 10, 20)"
+        )
+    conn.commit()
+
+    node1.query(
+        f"""
+        CREATE TABLE {table_name}
+        (
+            id UInt32,
+            name String,
+            age UInt32,
+            money UInt32
+        )
+        ENGINE = MySQL('mysql80:3306', 'clickhouse', '{table_name}', 'root', '{mysql_pass}')
+        SETTINGS enable_compression=1
+        """
+    )
+
+    assert node1.query(f"SELECT * FROM {table_name} FORMAT TSV").strip() == "1\tname_1\t10\t20"
+
+    node1.query(f"DROP TABLE IF EXISTS {table_name}")
+
+    assert (
+        node1.query(
+            f"""
+            SELECT *
+            FROM mysql('mysql80:3306', 'clickhouse', '{table_name}', 'root', '{mysql_pass}',
+                SETTINGS enable_compression = 1)
+            FORMAT TSV
+            """
+        ).strip()
+        == "1\tname_1\t10\t20"
+    )
+
+    node1.query(
+        f"""
+        CREATE NAMED COLLECTION mysql_compression_creds AS
+            host = 'mysql80',
+            port = 3306,
+            database = 'clickhouse',
+            user = 'root',
+            password = '{mysql_pass}',
+            enable_compression = 1
+        """
+    )
+    try:
+        assert (
+            node1.query(
+                f"SELECT * FROM mysql(mysql_compression_creds, table='{table_name}') FORMAT TSV"
+            ).strip()
+            == "1\tname_1\t10\t20"
+        )
+    finally:
+        node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
+
+    # Verify that MySQL protocol compression was actually negotiated at the wire level.
+    # performance_schema.session_status is scoped to the current connection, so Compression=ON
+    # proves MYSQL_OPT_COMPRESS was applied to the connection ClickHouse opened.
+    compression_status = ""
+    for _ in range(10):
+        compression_status = node1.query(
+            f"""
+            SELECT Variable_value
+            FROM mysql('mysql80:3306', 'performance_schema', 'session_status', 'root', '{mysql_pass}',
+                SETTINGS enable_compression = 1)
+            WHERE Variable_name = 'Compression'
+            FORMAT TSV
+            """
+        ).strip()
+        if compression_status == "ON":
+            break
+        time.sleep(0.5)
+
+    assert compression_status == "ON", (
+        f"Expected MySQL compression to be ON, got: {compression_status!r}"
+    )
+
+    drop_mysql_table(conn, table_name)
+    conn.close()
+
+
 def test_mysql_point(started_cluster):
     table_name = "test_mysql_point"
     node1.query(f"DROP TABLE IF EXISTS {table_name}")

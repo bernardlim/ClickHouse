@@ -12,7 +12,11 @@ from helpers.cluster import ClickHouseCluster
 from helpers.port_forward import PortForward
 from helpers.config_cluster import mysql_pass
 
-DICTS = ["configs/dictionaries/mysql_dict1.xml", "configs/dictionaries/mysql_dict2.xml"]
+DICTS = [
+    "configs/dictionaries/mysql_dict1.xml",
+    "configs/dictionaries/mysql_dict2.xml",
+    "configs/dictionaries/mysql_dict_compression.xml",
+]
 CONFIG_FILES = [
     "configs/remote_servers.xml",
     "configs/named_collections.xml",
@@ -617,3 +621,37 @@ def test_background_dictionary_reconnect(started_cluster):
             )
             > 0
         )
+
+
+def test_enable_compression_xml_dict(started_cluster):
+    """Regression: <enable_compression>1</enable_compression> in XML dictionary source must not be rejected."""
+    mysql_connection = get_mysql_conn(started_cluster)
+
+    try:
+        execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
+        execute_mysql_query(
+            mysql_connection,
+            "CREATE TABLE test.dict_compression_table (id INT NOT NULL, value TEXT, PRIMARY KEY(id));",
+        )
+        execute_mysql_query(
+            mysql_connection,
+            "INSERT INTO test.dict_compression_table VALUES (1, 'compressed');",
+        )
+
+        # The dictionary is loaded from the static XML config (mysql_dict_compression.xml).
+        # Reload so the newly created table is visible. Dictionary reload can be
+        # asynchronous, so retry until the value becomes visible.
+        result = ""
+        for _ in range(20):
+            instance.query("SYSTEM RELOAD DICTIONARY dict_compression")
+            result = instance.query(
+                "SELECT dictGetString('dict_compression', 'value', toUInt64(1))"
+            ).strip()
+            if result == "compressed":
+                break
+            time.sleep(0.5)
+
+        assert result == "compressed", f"Unexpected: {result!r}"
+    finally:
+        execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
+        mysql_connection.close()
