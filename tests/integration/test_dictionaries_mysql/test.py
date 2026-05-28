@@ -639,13 +639,19 @@ def test_enable_compression_xml_dict(started_cluster):
         )
 
         # The dictionary is loaded from the static XML config (mysql_dict_compression.xml).
-        # Reload so the newly created table is visible.
-        instance.query("SYSTEM RELOAD DICTIONARY dict_compression")
+        # Reload so the newly created table is visible. Dictionary reload can be
+        # asynchronous, so retry until the value becomes visible.
+        result = ""
+        for _ in range(20):
+            instance.query("SYSTEM RELOAD DICTIONARY dict_compression")
+            result = instance.query(
+                "SELECT dictGetString('dict_compression', 'value', toUInt64(1))"
+            ).strip()
+            if result == "compressed":
+                break
+            time.sleep(0.5)
 
-        result = instance.query(
-            "SELECT dictGetString('dict_compression', 'value', toUInt64(1))"
-        )
-        assert result.strip() == "compressed", f"Unexpected: {result!r}"
+        assert result == "compressed", f"Unexpected: {result!r}"
     finally:
         execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
         mysql_connection.close()
