@@ -627,24 +627,25 @@ def test_enable_compression_xml_dict(started_cluster):
     """Regression: <enable_compression>1</enable_compression> in XML dictionary source must not be rejected."""
     mysql_connection = get_mysql_conn(started_cluster)
 
-    execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
-    execute_mysql_query(
-        mysql_connection,
-        "CREATE TABLE test.dict_compression_table (id INT NOT NULL, value TEXT, PRIMARY KEY(id));",
-    )
-    execute_mysql_query(
-        mysql_connection,
-        "INSERT INTO test.dict_compression_table VALUES (1, 'compressed');",
-    )
+    try:
+        execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
+        execute_mysql_query(
+            mysql_connection,
+            "CREATE TABLE test.dict_compression_table (id INT NOT NULL, value TEXT, PRIMARY KEY(id));",
+        )
+        execute_mysql_query(
+            mysql_connection,
+            "INSERT INTO test.dict_compression_table VALUES (1, 'compressed');",
+        )
 
-    # The dictionary is loaded from the static XML config (mysql_dict_compression.xml).
-    # Reload so the newly created table is visible.
-    instance.query("SYSTEM RELOAD DICTIONARY dict_compression")
+        # The dictionary is loaded from the static XML config (mysql_dict_compression.xml).
+        # Reload so the newly created table is visible.
+        instance.query("SYSTEM RELOAD DICTIONARY dict_compression")
 
-    result = instance.query(
-        "SELECT dictGetString('dict_compression', 'value', toUInt64(1))"
-    )
-    assert result.strip() == "compressed", f"Unexpected: {result!r}"
-
-    execute_mysql_query(mysql_connection, "DROP TABLE test.dict_compression_table;")
-    mysql_connection.close()
+        result = instance.query(
+            "SELECT dictGetString('dict_compression', 'value', toUInt64(1))"
+        )
+        assert result.strip() == "compressed", f"Unexpected: {result!r}"
+    finally:
+        execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
+        mysql_connection.close()
