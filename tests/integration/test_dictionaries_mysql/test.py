@@ -12,7 +12,11 @@ from helpers.cluster import ClickHouseCluster
 from helpers.port_forward import PortForward
 from helpers.config_cluster import mysql_pass
 
-DICTS = ["configs/dictionaries/mysql_dict1.xml", "configs/dictionaries/mysql_dict2.xml"]
+DICTS = [
+    "configs/dictionaries/mysql_dict1.xml",
+    "configs/dictionaries/mysql_dict2.xml",
+    "configs/dictionaries/mysql_dict_compression.xml",
+]
 CONFIG_FILES = [
     "configs/remote_servers.xml",
     "configs/named_collections.xml",
@@ -617,3 +621,78 @@ def test_background_dictionary_reconnect(started_cluster):
             )
             > 0
         )
+
+
+def test_enable_compression_xml_dict(started_cluster):
+    """Regression: <enable_compression>1</enable_compression> in XML dictionary source must not be rejected."""
+    mysql_connection = get_mysql_conn(started_cluster)
+
+    try:
+        execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
+        execute_mysql_query(
+            mysql_connection,
+            "CREATE TABLE test.dict_compression_table (id INT NOT NULL, value TEXT, PRIMARY KEY(id));",
+        )
+        execute_mysql_query(
+            mysql_connection,
+            "INSERT INTO test.dict_compression_table VALUES (1, 'compressed');",
+        )
+
+        # The dictionary is loaded from the static XML config (mysql_dict_compression.xml).
+        # Reload so the newly created table is visible. Dictionary reload can be
+        # asynchronous, so retry until the value becomes visible.
+        result = ""
+        for _ in range(20):
+            instance.query("SYSTEM RELOAD DICTIONARY dict_compression")
+            result = instance.query(
+                "SELECT dictGetString('dict_compression', 'value', toUInt64(1))"
+            ).strip()
+            if result == "compressed":
+                break
+            time.sleep(0.5)
+
+        assert result == "compressed", f"Unexpected: {result!r}"
+
+        # Wire-level assertion: verify that the config-backed MySQL source with
+        # <enable_compression>1</enable_compression> actually negotiates MYSQL_OPT_COMPRESS.
+        # Create a DDL dictionary pointing at performance_schema.session_status (with
+        # enable_compression 1) and assert that the Compression session variable is ON.
+        instance.query("DROP DICTIONARY IF EXISTS dict_compression_wire_check")
+        instance.query(
+            f"""
+            CREATE DICTIONARY dict_compression_wire_check
+            (
+                Variable_name String,
+                Variable_value String
+            )
+            PRIMARY KEY Variable_name
+            SOURCE(MYSQL(
+                host 'mysql80'
+                port 3306
+                user 'root'
+                password '{mysql_pass}'
+                db 'performance_schema'
+                table 'session_status'
+                enable_compression 1
+            ))
+            LAYOUT(COMPLEX_KEY_HASHED())
+            LIFETIME(0)
+            """
+        )
+        try:
+            wire_compression = ""
+            for _ in range(10):
+                wire_compression = instance.query(
+                    "SELECT dictGet('dict_compression_wire_check', 'Variable_value', 'Compression')"
+                ).strip()
+                if wire_compression == "ON":
+                    break
+                time.sleep(0.5)
+            assert wire_compression == "ON", (
+                f"Expected MySQL compression ON via XML dict path, got: {wire_compression!r}"
+            )
+        finally:
+            instance.query("DROP DICTIONARY IF EXISTS dict_compression_wire_check")
+    finally:
+        execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
+        mysql_connection.close()
