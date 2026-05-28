@@ -38,6 +38,18 @@ ENGINE = MySQL('host:port', ['database' | database], 'user', 'password')
 - `user` — MySQL user.
 - `password` — User password.
 
+## Settings {#settings}
+
+The `MySQL` database engine accepts [MySQL integration settings](../table-engines/integrations/mysql.md#mysql-settings), including `enable_compression`.
+
+Example:
+
+```sql
+CREATE DATABASE mysql_db
+ENGINE = MySQL('localhost:3306', 'test', 'my_user', 'user_password')
+SETTINGS enable_compression = 1;
+```
+
 ## Data types support {#data_types-support}
 
 | MySQL                            | ClickHouse                                                   |

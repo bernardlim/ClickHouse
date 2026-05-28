@@ -112,6 +112,7 @@ This setting applies to:
 
 - the `mysql` table function;
 - the `MySQL` table engine;
+- the `MySQL` database engine;
 - named collections used by MySQL integrations.
 
 When enabled, ClickHouse requests compression for the connection.

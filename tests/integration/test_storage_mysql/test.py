@@ -72,6 +72,29 @@ def create_mysql_db(conn, name):
         cursor.execute("CREATE DATABASE {} DEFAULT CHARACTER SET 'utf8'".format(name))
 
 
+def wait_for_mysql_compression_status(connection, user, host, timeout=10):
+    deadline = time.time() + timeout
+    rows = []
+    query = """
+        SELECT s.VARIABLE_VALUE
+        FROM performance_schema.status_by_thread AS s
+        INNER JOIN performance_schema.threads AS t ON s.THREAD_ID = t.THREAD_ID
+        WHERE s.VARIABLE_NAME = 'Compression'
+          AND t.PROCESSLIST_USER = %s
+          AND t.PROCESSLIST_COMMAND = 'Query'
+          AND t.PROCESSLIST_HOST LIKE %s
+    """
+    while time.time() < deadline:
+        with connection.cursor() as cursor:
+            cursor.execute(query, (user, f"{host}:%"))
+            rows = [value for (value,) in cursor.fetchall()]
+        if rows:
+            return rows
+        time.sleep(0.1)
+
+    return rows
+
+
 @pytest.fixture(scope="module")
 def started_cluster():
     try:
@@ -761,6 +784,9 @@ def test_settings(started_cluster):
 
 def test_enable_compression(started_cluster):
     table_name = "test_enable_compression"
+    mysql_compression_user = "compression_user"
+    mysql_compression_password = "compression_password"
+
     node1.query(f"DROP TABLE IF EXISTS {table_name}")
     node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
 
@@ -768,54 +794,100 @@ def test_enable_compression(started_cluster):
     drop_mysql_table(conn, table_name)
     create_mysql_table(conn, table_name)
 
-    with conn.cursor() as cursor:
-        cursor.execute(
-            f"INSERT INTO `clickhouse`.`{table_name}` (id, name, age, money) VALUES (1, 'name_1', 10, 20)"
-        )
-    conn.commit()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"INSERT INTO `clickhouse`.`{table_name}` (id, name, age, money) VALUES (1, 'name_1', 10, 20)"
+            )
+            cursor.execute(f"DROP USER IF EXISTS '{mysql_compression_user}'@'%'")
+            cursor.execute(
+                f"CREATE USER '{mysql_compression_user}'@'%' IDENTIFIED BY '{mysql_compression_password}'"
+            )
+            cursor.execute(
+                f"GRANT SELECT ON `clickhouse`.`{table_name}` TO '{mysql_compression_user}'@'%'"
+            )
+        conn.commit()
 
-    node1.query(
-        f"""
-        CREATE TABLE {table_name}
-        (
-            id UInt32,
-            name String,
-            age UInt32,
-            money UInt32
-        )
-        ENGINE = MySQL('mysql80:3306', 'clickhouse', '{table_name}', 'root', '{mysql_pass}')
-        SETTINGS enable_compression=1
-        """
-    )
-
-    assert node1.query(f"SELECT * FROM {table_name} FORMAT TSV").strip() == "1\tname_1\t10\t20"
-
-    node1.query(f"DROP TABLE IF EXISTS {table_name}")
-
-    assert (
         node1.query(
             f"""
-            SELECT *
-            FROM mysql('mysql80:3306', 'clickhouse', '{table_name}', 'root', '{mysql_pass}',
-                SETTINGS enable_compression = 1)
-            FORMAT TSV
+            CREATE TABLE {table_name}
+            (
+                id UInt32,
+                name String,
+                age UInt32,
+                money UInt32
+            )
+            ENGINE = MySQL(
+                'mysql80:3306',
+                'clickhouse',
+                '{table_name}',
+                '{mysql_compression_user}',
+                '{mysql_compression_password}')
+            SETTINGS enable_compression=1
             """
-        ).strip()
-        == "1\tname_1\t10\t20"
-    )
+        )
 
-    node1.query(
-        f"""
-        CREATE NAMED COLLECTION mysql_compression_creds AS
-            host = 'mysql80',
-            port = 3306,
-            database = 'clickhouse',
-            user = 'root',
-            password = '{mysql_pass}',
-            enable_compression = 1
-        """
-    )
-    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"LOCK TABLES `clickhouse`.`{table_name}` WRITE")
+
+        query_results = {}
+        query_exception = {}
+
+        def read_with_compression():
+            try:
+                query_results["data"] = node1.query(
+                    f"SELECT * FROM {table_name} FORMAT TSV"
+                ).strip()
+            except Exception as ex:
+                query_exception["error"] = ex
+
+        worker = threading.Thread(target=read_with_compression)
+        worker.start()
+        compression_values = wait_for_mysql_compression_status(
+            conn, mysql_compression_user, node1.ip_address
+        )
+
+        with conn.cursor() as cursor:
+            cursor.execute("UNLOCK TABLES")
+
+        worker.join()
+
+        assert "error" not in query_exception
+        assert query_results["data"] == "1\tname_1\t10\t20"
+        assert compression_values
+        assert all(value == "ON" for value in compression_values)
+
+        node1.query(f"DROP TABLE IF EXISTS {table_name}")
+
+        assert (
+            node1.query(
+                f"""
+                SELECT *
+                FROM mysql(
+                    'mysql80:3306',
+                    'clickhouse',
+                    '{table_name}',
+                    '{mysql_compression_user}',
+                    '{mysql_compression_password}',
+                    SETTINGS enable_compression = 1)
+                FORMAT TSV
+                """
+            ).strip()
+            == "1\tname_1\t10\t20"
+        )
+
+        node1.query(
+            f"""
+            CREATE NAMED COLLECTION mysql_compression_creds AS
+                host = 'mysql80',
+                port = 3306,
+                database = 'clickhouse',
+                user = '{mysql_compression_user}',
+                password = '{mysql_compression_password}',
+                enable_compression = 1
+            """
+        )
+
         assert (
             node1.query(
                 f"SELECT * FROM mysql(mysql_compression_creds, table='{table_name}') FORMAT TSV"
@@ -824,6 +896,11 @@ def test_enable_compression(started_cluster):
         )
     finally:
         node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
+        node1.query(f"DROP TABLE IF EXISTS {table_name}")
+        with conn.cursor() as cursor:
+            cursor.execute("UNLOCK TABLES")
+            cursor.execute(f"DROP USER IF EXISTS '{mysql_compression_user}'@'%'")
+        conn.commit()
 
     drop_mysql_table(conn, table_name)
     conn.close()
