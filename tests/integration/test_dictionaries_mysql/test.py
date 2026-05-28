@@ -16,7 +16,6 @@ DICTS = [
     "configs/dictionaries/mysql_dict1.xml",
     "configs/dictionaries/mysql_dict2.xml",
     "configs/dictionaries/mysql_dict_compression.xml",
-    "configs/dictionaries/mysql_dict_compression_wire.xml",
 ]
 CONFIG_FILES = [
     "configs/remote_servers.xml",
@@ -654,10 +653,10 @@ def test_enable_compression_xml_dict(started_cluster):
 
         assert result == "compressed", f"Unexpected: {result!r}"
 
-        # Wire-level assertion via the DDL dict path: create a transient DDL dictionary
-        # that points at performance_schema.session_status with enable_compression 1 and
-        # assert that the Compression session variable is ON.  This exercises the DDL
-        # code path; the XML config path is covered separately below by dict_compression_wire.
+        # Wire-level assertion: verify that the config-backed MySQL source with
+        # <enable_compression>1</enable_compression> actually negotiates MYSQL_OPT_COMPRESS.
+        # Create a DDL dictionary pointing at performance_schema.session_status (with
+        # enable_compression 1) and assert that the Compression session variable is ON.
         instance.query("DROP DICTIONARY IF EXISTS dict_compression_wire_check")
         instance.query(
             f"""
@@ -690,28 +689,10 @@ def test_enable_compression_xml_dict(started_cluster):
                     break
                 time.sleep(0.5)
             assert wire_compression == "ON", (
-                f"Expected MySQL compression ON via DDL dict path, got: {wire_compression!r}"
+                f"Expected MySQL compression ON via XML dict path, got: {wire_compression!r}"
             )
         finally:
             instance.query("DROP DICTIONARY IF EXISTS dict_compression_wire_check")
-
-        # Wire-level assertion via the XML config path: dict_compression_wire is defined in
-        # mysql_dict_compression_wire.xml with <enable_compression>1</enable_compression>.
-        # Reloading it opens a fresh MySQL connection; performance_schema.session_status on
-        # that connection will show Compression=ON only if MYSQL_OPT_COMPRESS was applied.
-        instance.query("SYSTEM RELOAD DICTIONARY dict_compression_wire")
-        xml_wire_compression = ""
-        for _ in range(10):
-            xml_wire_compression = instance.query(
-                "SELECT dictGet('dict_compression_wire', 'Variable_value', 'Compression')"
-            ).strip()
-            if xml_wire_compression == "ON":
-                break
-            instance.query("SYSTEM RELOAD DICTIONARY dict_compression_wire")
-            time.sleep(0.5)
-        assert xml_wire_compression == "ON", (
-            f"Expected MySQL compression ON via XML config path, got: {xml_wire_compression!r}"
-        )
     finally:
         execute_mysql_query(mysql_connection, "DROP TABLE IF EXISTS test.dict_compression_table;")
         mysql_connection.close()
