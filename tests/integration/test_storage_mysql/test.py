@@ -73,6 +73,15 @@ def create_mysql_db(conn, name):
 
 
 def wait_for_mysql_compression_status(connection, user, host, timeout=10):
+    """
+    Poll MySQL performance_schema for active query threads created by `user`
+    from `host` (matched as `host:%`) and return their Compression status values.
+
+    `connection` is a pymysql connection object.
+    Returns a list of status strings across all matching threads
+    (for example, ["ON", "ON"]). Returns an empty list if the timeout expires first.
+    The default timeout is chosen to tolerate transient CI delays.
+    """
     deadline = time.time() + timeout
     rows = []
     query = """
@@ -90,9 +99,46 @@ def wait_for_mysql_compression_status(connection, user, host, timeout=10):
             rows = [value for (value,) in cursor.fetchall()]
         if rows:
             return rows
-        time.sleep(0.1)
+        time.sleep(0.2)
 
     return rows
+
+
+def assert_mysql_compression_negotiated(connection, user, table_name, query, expected_result):
+    """
+    Execute `query` via ClickHouse while holding a MySQL table write lock so the
+    corresponding MySQL session stays active long enough to inspect Compression=ON.
+    """
+    query_results = []
+    query_exceptions = []
+
+    def execute_query():
+        try:
+            query_results.append(node1.query(query).strip())
+        except Exception as ex:
+            query_exceptions.append(ex)
+
+    with connection.cursor() as cursor:
+        # Hold a write lock so the ClickHouse read blocks long enough to inspect
+        # the active MySQL session status in performance_schema.
+        cursor.execute(f"LOCK TABLES `clickhouse`.`{table_name}` WRITE")
+
+    worker = threading.Thread(target=execute_query)
+    try:
+        worker.start()
+        compression_values = wait_for_mysql_compression_status(
+            connection, user, node1.ip_address
+        )
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("UNLOCK TABLES")
+
+    worker.join()
+
+    assert not query_exceptions, f"MySQL read failed: {query_exceptions[0]}"
+    assert query_results[0] == expected_result
+    assert compression_values
+    assert all(value == "ON" for value in compression_values)
 
 
 @pytest.fixture(scope="module")
@@ -827,53 +873,32 @@ def test_enable_compression(started_cluster):
             """
         )
 
-        with conn.cursor() as cursor:
-            cursor.execute(f"LOCK TABLES `clickhouse`.`{table_name}` WRITE")
-
-        query_results = {}
-        query_exception = {}
-
-        def read_with_compression():
-            try:
-                query_results["data"] = node1.query(
-                    f"SELECT * FROM {table_name} FORMAT TSV"
-                ).strip()
-            except Exception as ex:
-                query_exception["error"] = ex
-
-        worker = threading.Thread(target=read_with_compression)
-        worker.start()
-        compression_values = wait_for_mysql_compression_status(
-            conn, mysql_compression_user, node1.ip_address
+        assert_mysql_compression_negotiated(
+            conn,
+            mysql_compression_user,
+            table_name,
+            f"SELECT * FROM {table_name} FORMAT TSV",
+            "1\tname_1\t10\t20",
         )
-
-        with conn.cursor() as cursor:
-            cursor.execute("UNLOCK TABLES")
-
-        worker.join()
-
-        assert "error" not in query_exception
-        assert query_results["data"] == "1\tname_1\t10\t20"
-        assert compression_values
-        assert all(value == "ON" for value in compression_values)
 
         node1.query(f"DROP TABLE IF EXISTS {table_name}")
 
-        assert (
-            node1.query(
-                f"""
-                SELECT *
-                FROM mysql(
-                    'mysql80:3306',
-                    'clickhouse',
-                    '{table_name}',
-                    '{mysql_compression_user}',
-                    '{mysql_compression_password}',
-                    SETTINGS enable_compression = 1)
-                FORMAT TSV
-                """
-            ).strip()
-            == "1\tname_1\t10\t20"
+        assert_mysql_compression_negotiated(
+            conn,
+            mysql_compression_user,
+            table_name,
+            f"""
+            SELECT *
+            FROM mysql(
+                'mysql80:3306',
+                'clickhouse',
+                '{table_name}',
+                '{mysql_compression_user}',
+                '{mysql_compression_password}',
+                SETTINGS enable_compression = 1)
+            FORMAT TSV
+            """,
+            "1\tname_1\t10\t20",
         )
 
         node1.query(
@@ -888,22 +913,21 @@ def test_enable_compression(started_cluster):
             """
         )
 
-        assert (
-            node1.query(
-                f"SELECT * FROM mysql(mysql_compression_creds, table='{table_name}') FORMAT TSV"
-            ).strip()
-            == "1\tname_1\t10\t20"
+        assert_mysql_compression_negotiated(
+            conn,
+            mysql_compression_user,
+            table_name,
+            f"SELECT * FROM mysql(mysql_compression_creds, table='{table_name}') FORMAT TSV",
+            "1\tname_1\t10\t20",
         )
     finally:
         node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
         node1.query(f"DROP TABLE IF EXISTS {table_name}")
         with conn.cursor() as cursor:
-            cursor.execute("UNLOCK TABLES")
             cursor.execute(f"DROP USER IF EXISTS '{mysql_compression_user}'@'%'")
         conn.commit()
-
-    drop_mysql_table(conn, table_name)
-    conn.close()
+        drop_mysql_table(conn, table_name)
+        conn.close()
 
 
 def test_mysql_point(started_cluster):
