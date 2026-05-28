@@ -37,7 +37,7 @@ static std::string getPoolEntryName(const Poco::Util::AbstractConfiguration & co
     std::string port = config.getString(config_name + ".port", "");
     std::string user = config.getString(config_name + ".user", "");
     std::string db = config.getString(config_name + ".db", "");
-    std::string compression_key = config.getBool(config_name + ".enable_compression", false) ? "1" : "0";
+    std::string compression_value = config.getBool(config_name + ".enable_compression", false) ? "1" : "0";
 
     Poco::Util::AbstractConfiguration::Keys keys;
     config.keys(config_name, keys);
@@ -55,13 +55,13 @@ static std::string getPoolEntryName(const Poco::Util::AbstractConfiguration & co
                 std::string tmp_host = config.getString(replica_name + ".host", host);
                 std::string tmp_port = config.getString(replica_name + ".port", port);
                 std::string tmp_user = config.getString(replica_name + ".user", user);
-                entry_name += (entry_name.empty() ? "" : "|") + tmp_user + "@" + tmp_host + ":" + tmp_port + "/" + db + "?compression=" + compression_key;
+                entry_name += (entry_name.empty() ? "" : "|") + tmp_user + "@" + tmp_host + ":" + tmp_port + "/" + db + "?compression=" + compression_value;
             }
         }
     }
     else
     {
-        entry_name = user + "@" + host + ":" + port + "/" + db + "?compression=" + compression_key;
+        entry_name = user + "@" + host + ":" + port + "/" + db + "?compression=" + compression_value;
     }
     return entry_name;
 }
