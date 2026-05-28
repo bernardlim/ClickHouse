@@ -822,6 +822,27 @@ def test_enable_compression(started_cluster):
             ).strip()
             == "1\tname_1\t10\t20"
         )
+
+        # Wire-level assertion via the named-collection path: Compression=ON must be
+        # negotiated on the connection opened by the named collection (which carries
+        # enable_compression=1). performance_schema.session_status is scoped to the
+        # current connection, so Compression=ON proves MYSQL_OPT_COMPRESS was applied.
+        nc_compression_status = ""
+        for _ in range(10):
+            nc_compression_status = node1.query(
+                """
+                SELECT Variable_value
+                FROM mysql(mysql_compression_creds, database='performance_schema', table='session_status')
+                WHERE Variable_name = 'Compression'
+                FORMAT TSV
+                """
+            ).strip()
+            if nc_compression_status == "ON":
+                break
+            time.sleep(0.5)
+        assert nc_compression_status == "ON", (
+            f"Expected MySQL compression to be ON via named collection, got: {nc_compression_status!r}"
+        )
     finally:
         node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
 
