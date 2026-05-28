@@ -823,10 +823,10 @@ def test_enable_compression(started_cluster):
             == "1\tname_1\t10\t20"
         )
 
-        # Wire-level assertion via the named-collection path: Compression=ON must be
-        # negotiated on the connection opened by the named collection (which carries
-        # enable_compression=1). performance_schema.session_status is scoped to the
-        # current connection, so Compression=ON proves MYSQL_OPT_COMPRESS was applied.
+        # Verify wire-level compression is actually negotiated via the named-collection path.
+        # Named collections use a different settings carrier than the literal SETTINGS clause,
+        # so this is a distinct code path. Override database+table to query performance_schema
+        # so MySQL reports the compression state of the ClickHouse-opened connection.
         nc_compression_status = ""
         for _ in range(10):
             nc_compression_status = node1.query(
@@ -840,15 +840,15 @@ def test_enable_compression(started_cluster):
             if nc_compression_status == "ON":
                 break
             time.sleep(0.5)
+
         assert nc_compression_status == "ON", (
-            f"Expected MySQL compression to be ON via named collection, got: {nc_compression_status!r}"
+            f"Expected Compression=ON via named collection, got: {nc_compression_status!r}"
         )
     finally:
         node1.query("DROP NAMED COLLECTION IF EXISTS mysql_compression_creds")
 
-    # Verify that MySQL protocol compression was actually negotiated at the wire level.
-    # performance_schema.session_status is scoped to the current connection, so Compression=ON
-    # proves MYSQL_OPT_COMPRESS was applied to the connection ClickHouse opened.
+    # Separately verify wire-level compression via the literal table-function path (SETTINGS clause).
+    # This is a distinct code path from the named-collection path above.
     compression_status = ""
     for _ in range(10):
         compression_status = node1.query(
