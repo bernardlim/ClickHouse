@@ -1,0 +1,33 @@
+<clickhouse>
+    <dictionary>
+        <name>dict_compression_wire</name>
+        <source>
+            <mysql>
+                <db>performance_schema</db>
+                <host>mysql80</host>
+                <port>3306</port>
+                <user>root</user>
+                <password>clickhouse</password>
+                <table>session_status</table>
+                <enable_compression>1</enable_compression>
+            </mysql>
+        </source>
+        <layout>
+            <complex_key_hashed/>
+        </layout>
+        <structure>
+            <key>
+                <attribute>
+                    <name>Variable_name</name>
+                    <type>String</type>
+                </attribute>
+            </key>
+            <attribute>
+                <name>Variable_value</name>
+                <type>String</type>
+                <null_value></null_value>
+            </attribute>
+        </structure>
+        <lifetime>0</lifetime>
+    </dictionary>
+</clickhouse>
